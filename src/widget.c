@@ -110,8 +110,8 @@ static int status_widget_callback(pax_buf_t* buffer, int x_right, int y, int hei
     return text_width + 8;  // Width used including margins
 }
 
-int widget_init(void) {
-    g_widget_id = asp_plugin_status_widget_register(status_widget_callback, NULL);
+int widget_init(plugin_context_t* ctx) {
+    g_widget_id = asp_plugin_status_widget_register(ctx, status_widget_callback, NULL);
     if (g_widget_id < 0) {
         asp_log_warn("musicplayer", "Failed to register status widget");
         return -1;

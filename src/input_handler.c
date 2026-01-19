@@ -191,8 +191,8 @@ static bool input_hook_callback(plugin_input_event_t* event, void* user_data) {
     return false;  // Don't consume unhandled events
 }
 
-int input_handler_init(void) {
-    g_hook_id = asp_plugin_input_hook_register(input_hook_callback, NULL);
+int input_handler_init(plugin_context_t* ctx) {
+    g_hook_id = asp_plugin_input_hook_register(ctx, input_hook_callback, NULL);
     if (g_hook_id < 0) {
         asp_log_error("musicplayer", "Failed to register input hook");
         return -1;

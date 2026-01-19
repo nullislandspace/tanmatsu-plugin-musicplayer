@@ -77,7 +77,7 @@ static int plugin_init(plugin_context_t* ctx) {
     audio_set_volume(g_state.volume);
 
     // Register input hook
-    if (input_handler_init() != 0) {
+    if (input_handler_init(ctx) != 0) {
         asp_log_error("musicplayer", "Failed to register input hook");
         audio_cleanup();
         playlist_cleanup();
@@ -85,7 +85,7 @@ static int plugin_init(plugin_context_t* ctx) {
     }
 
     // Register status widget (optional - continue even if it fails)
-    if (widget_init() != 0) {
+    if (widget_init(ctx) != 0) {
         asp_log_warn("musicplayer", "Status widget not available");
     }
 
