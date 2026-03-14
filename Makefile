@@ -6,7 +6,7 @@ PLUGIN_NAME := musicplayer
 PLUGIN_SDK := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))/../tanmatsu-launcher/tools/plugin-sdk
 TOOLCHAIN := $(PLUGIN_SDK)/toolchain-plugin.cmake
 BADGEDIR := /tmp/mnt
-DEST := $(BADGEDIR)/int/plugins
+DEST := $(BADGEDIR)/sd/plugins
 
 .PHONY: all build clean rebuild
 
