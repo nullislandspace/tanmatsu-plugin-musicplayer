@@ -27,9 +27,9 @@ music_player_state_t* music_player_get_state(void) {
 // Plugin metadata
 static const plugin_info_t plugin_info = {
     .name = "Music Player",
-    .slug = "musicplayer",
+    .slug = "at.cavac.musicplayer",
     .version = "1.0.0",
-    .author = "Tanmatsu",
+    .author = "Rene Schickbauer",
     .description = "Background MP3 music player",
     .api_version = TANMATSU_PLUGIN_API_VERSION,
     .type = PLUGIN_TYPE_SERVICE,

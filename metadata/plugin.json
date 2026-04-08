@@ -1,8 +1,8 @@
 {
     "name": "Music Player",
-    "slug": "musicplayer",
+    "slug": "at.cavac.musicplayer",
     "version": "1.0.0",
-    "author": "Tanmatsu",
+    "author": "Rene Schickbauer",
     "description": "Background MP3 music player for files in /sd/music",
     "type": "service",
     "api_version": 2,

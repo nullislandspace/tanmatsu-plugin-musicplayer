@@ -1,0 +1,28 @@
+{
+    "name": "Music Player",
+    "description": "Background MP3 music player for files in /sd/music",
+    "categories": [
+        "tools"
+    ],
+    "version": "1.0.0",
+    "icon": {},
+    "author": "Rene Schickbauer",
+    "license_type": "MIT",
+    "application": [
+        {
+            "targets": [
+                "tanmatsu",
+                "konsool"
+            ],
+            "revision": 1,
+            "type": "plugin",
+            "executable": "musicplayer.plugin",
+            "assets": [
+                {
+                    "source_file": "plugin.json",
+                    "target_file": "plugin.json"
+                }
+            ]
+        }
+    ]
+}
