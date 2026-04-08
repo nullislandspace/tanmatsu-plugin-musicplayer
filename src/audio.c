@@ -188,7 +188,7 @@ static void decode_loop(void) {
                 asp_log_info("musicplayer", "Format: %d Hz, %d ch, %d kbps",
                             info.hz, info.channels, info.bitrate_kbps);
                 // Only reconfigure I2S if sample rate is different
-                if (info.hz != g_sample_rate) {
+                if ((uint32_t)info.hz != g_sample_rate) {
                     asp_log_info("musicplayer", "Changing sample rate from %u to %d",
                                 (unsigned)g_sample_rate, info.hz);
                     asp_audio_stop();
