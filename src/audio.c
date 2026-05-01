@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdlib.h>
 
 // Include minimp3 implementation
@@ -17,11 +18,8 @@
 #define MINIMP3_NO_SIMD
 #include "minimp3.h"
 
-// ASP audio API - available to plugins
-extern int asp_audio_set_rate(uint32_t rate_hz);
-extern int asp_audio_get_volume(float* out_percentage);
-extern int asp_audio_set_volume(float percentage);
-extern int asp_audio_set_amplifier(bool enabled);
+// ASP audio API - available to plugins. Volume and amplifier are managed
+// by the launcher (NVS setting + volume keys); plugins do not touch them.
 extern int asp_audio_stop(void);
 extern int asp_audio_start(void);
 extern int asp_audio_write(void* samples, size_t samples_size, int64_t timeout_ms);
@@ -187,14 +185,8 @@ static void decode_loop(void) {
             if (!g_format_logged) {
                 asp_log_info("musicplayer", "Format: %d Hz, %d ch, %d kbps",
                             info.hz, info.channels, info.bitrate_kbps);
-                // Only reconfigure I2S if sample rate is different
-                if ((uint32_t)info.hz != g_sample_rate) {
-                    asp_log_info("musicplayer", "Changing sample rate from %u to %d",
-                                (unsigned)g_sample_rate, info.hz);
-                    asp_audio_stop();
-                    asp_audio_set_rate(info.hz);
-                    asp_audio_start();
-                }
+                // The mixer runs at a fixed 44.1 kHz, so a real resampler
+                // is needed when info.hz differs (TODO).
                 g_sample_rate = info.hz;
                 g_format_logged = true;
                 // Reset debug counters for new file
@@ -220,6 +212,9 @@ static void decode_loop(void) {
             }
         }
     }
+    // Pause our mixer slot so other plugins regain full volume immediately
+    // when we stop producing samples (song end, pause, plugin stop).
+    asp_audio_stop();
     g_thread_in_decode = false;
 }
 
@@ -252,15 +247,9 @@ static void start_new_file(const char* path) {
     g_paused = false;
     g_playing = true;
 
-    // Force I2S channel reset: stop, reconfigure, start
-    asp_audio_stop();
-    asp_audio_set_rate(44100);  // Will be updated when we decode first frame
+    // Resume / (re)allocate our mixer slot. The launcher manages the
+    // amplifier and master volume; the mixer is fixed at 44.1 kHz.
     asp_audio_start();
-
-    // Enable amplifier and set volume
-    asp_audio_set_amplifier(true);
-    music_player_state_t* state = music_player_get_state();
-    asp_audio_set_volume((float)state->volume);
 
     asp_log_info("musicplayer", "Playing: %s", path);
 }
@@ -320,7 +309,7 @@ int audio_init(void) {
     // Initialize MP3 decoder
     mp3dec_init(g_mp3_decoder);
 
-    // Create decoder thread with larger stack
+    // Create decoder thread with larger stack.
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, DECODER_STACK_SIZE);
@@ -329,6 +318,23 @@ int audio_init(void) {
     g_thread_in_decode = false;
     int err = pthread_create(&decoder_thread, &attr, decoder_thread_func, NULL);
     pthread_attr_destroy(&attr);
+
+    if (err == 0) {
+        // Raise the decoder's priority above the plugin task (5) so it
+        // preempts UI/widget work right after an SD read returns. The
+        // launcher's audio mixer (when enabled) runs at 7, so 6 is safe.
+        // pthread_attr_setschedparam isn't exported by the plugin loader,
+        // so we set priority on the live thread instead. The pthread.h on
+        // the SDK side doesn't declare pthread_setschedparam under default
+        // feature macros, but the symbol is exported by the launcher.
+        extern int pthread_setschedparam(pthread_t thread, int policy,
+                                         const struct sched_param* param);
+        struct sched_param sparam = { .sched_priority = 6 };
+        int prio_err = pthread_setschedparam(decoder_thread, SCHED_OTHER, &sparam);
+        if (prio_err != 0) {
+            asp_log_warn("musicplayer", "Failed to raise decoder priority: %d", prio_err);
+        }
+    }
 
     if (err != 0) {
         asp_log_error("musicplayer", "Failed to create decoder thread: %d (need %d bytes stack)",
@@ -400,9 +406,6 @@ void audio_cleanup(void) {
         g_current_file = NULL;
     }
 
-    // Mute output
-    asp_audio_set_amplifier(false);
-
     // Free heap buffers (PCM buffer is static)
     if (read_buffer) {
         free(read_buffer);
@@ -456,24 +459,26 @@ void audio_stop(void) {
     g_playing = false;
     g_paused = false;
     g_new_file_pending = false;
-    asp_audio_set_amplifier(false);
 }
 
 void audio_pause(void) {
+    // Decoder thread will exit decode_loop and call asp_audio_stop()
+    // on its own slot, pausing our mixer contribution.
     g_paused = true;
-    asp_audio_set_amplifier(false);
 }
 
 void audio_resume(void) {
     if (g_playing) {
+        // Clearing g_paused lets the decoder thread re-enter decode_loop;
+        // its first asp_audio_write will reactivate our mixer slot.
         g_paused = false;
-        asp_audio_set_amplifier(true);
     }
 }
 
 void audio_set_volume(uint8_t volume) {
-    if (volume > 100) volume = 100;
-    asp_audio_set_volume((float)volume);
+    // Volume is launcher-managed (NVS + volume keys). The plugin's UI value
+    // is kept for display only.
+    (void)volume;
 }
 
 bool audio_is_finished(void) {
