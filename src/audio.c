@@ -9,7 +9,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <pthread.h>
-#include <sched.h>
 #include <stdlib.h>
 
 // Include minimp3 implementation
@@ -20,12 +19,24 @@
 
 // ASP audio API - available to plugins. Volume and amplifier are managed
 // by the launcher (NVS setting + volume keys); plugins do not touch them.
-extern int asp_audio_stop(void);
-extern int asp_audio_start(void);
-extern int asp_audio_write(void* samples, size_t samples_size, int64_t timeout_ms);
+#include <asp/audio.h>
+
+// ASP file API - asp_fastopen() allocates a DMA-capable internal-RAM stdio
+// buffer for /sd and /int paths so the SD driver can DMA directly into it.
+// Falls back to plain fopen when CONFIG_FATFS_USE_FASTOPEN is off in the
+// launcher build.
+#include <asp/file.h>
 
 // Buffer sizes
 #define READ_BUFFER_SIZE    (16 * 1024)  // 16KB read buffer for file I/O (PSRAM)
+#define REFILL_THRESHOLD    (4 * 1024)   // Refill only when below this watermark.
+                                         // Forces SD reads to happen in large
+                                         // (~12 KB) chunks instead of per-frame
+                                         // (~400 byte) bursts; the SD driver and
+                                         // FATFS handle a few large reads far
+                                         // more efficiently than many tiny ones,
+                                         // which keeps SD-induced stalls below
+                                         // the I2S/mixer underrun threshold.
 #define MAX_FRAME_SIZE      (1152 * 2)   // Max samples per MP3 frame (stereo)
 #define PCM_BUFFER_SIZE     (MAX_FRAME_SIZE * sizeof(int16_t))  // 4608 bytes
 
@@ -66,10 +77,18 @@ static int g_fill_count = 0;
 // Track if we already warned about low buffer (to avoid spam)
 static bool g_warned_buffer_low = false;
 
-// Fill read buffer from file
+// Fill read buffer from file. Only does an SD read when the unread tail of the
+// buffer drops below REFILL_THRESHOLD; otherwise returns the current fill level
+// cheaply. This batches FATFS/SD work into infrequent large reads, which has
+// far lower latency variance than many small reads.
 static size_t fill_buffer(void) {
     if (!g_current_file) {
         return 0;
+    }
+
+    size_t available = (buffer_len > buffer_pos) ? (buffer_len - buffer_pos) : 0;
+    if (available >= REFILL_THRESHOLD) {
+        return available;
     }
 
     // Move remaining data to start of buffer
@@ -82,12 +101,20 @@ static size_t fill_buffer(void) {
         buffer_pos = 0;
     }
 
-    // Read more data
+    // Read more data - one large chunk to fill the buffer back up
     size_t space = READ_BUFFER_SIZE - buffer_len;
     if (space > 0) {
+        uint32_t fread_start = asp_plugin_get_tick_ms();
         size_t bytes_read = fread(read_buffer + buffer_len, 1, space, g_current_file);
+        uint32_t fread_time = asp_plugin_get_tick_ms() - fread_start;
         buffer_len += bytes_read;
         g_fill_count++;
+
+        // Anything over ~20 ms threatens the I2S/mixer underrun budget.
+        if (fread_time > 20) {
+            asp_log_warn("musicplayer", "Slow fread: %u bytes took %u ms (fill #%d)",
+                         (unsigned)bytes_read, (unsigned)fread_time, g_fill_count);
+        }
     }
 
     return buffer_len - buffer_pos;
@@ -108,7 +135,16 @@ static void decode_loop(void) {
     int samples;
 
     g_thread_in_decode = true;
+    uint32_t prev_loop_end = asp_plugin_get_tick_ms();
     while (g_playing && !g_paused && !g_thread_should_stop) {
+        // Track time spent outside this loop (preemption / sleep / scheduling).
+        uint32_t loop_top = asp_plugin_get_tick_ms();
+        uint32_t gap = loop_top - prev_loop_end;
+        if (gap > 20) {
+            asp_log_warn("musicplayer", "Loop gap: %u ms (frame %u) - preempted?",
+                         (unsigned)gap, g_frame_count);
+        }
+
         // Ensure we have data in buffer
         size_t available = fill_buffer();
 
@@ -199,7 +235,17 @@ static void decode_loop(void) {
             // Write to audio output (samples * channels * bytes per sample)
             // Note: volume attenuation is now done in minimp3's mp3d_scale_pcm()
             size_t bytes = samples * info.channels * sizeof(int16_t);
+            uint32_t write_start = asp_plugin_get_tick_ms();
             asp_audio_write(pcm_buffer, bytes, 500);
+            uint32_t write_time = asp_plugin_get_tick_ms() - write_start;
+            // asp_audio_write blocks when the downstream queue is full. Since
+            // the decoder runs faster than realtime, mild blocking is normal
+            // (~5-10 ms per chunk). A long wait means the queue was already
+            // full when we got here AND nothing drained it for a while.
+            if (write_time > 30) {
+                asp_log_warn("musicplayer", "Slow audio_write: %u bytes took %u ms (frame %u)",
+                             (unsigned)bytes, (unsigned)write_time, g_frame_count);
+            }
             g_samples_written += samples;
         } else if (info.frame_bytes == 0) {
             // Need more data or invalid frame, try to refill
@@ -211,6 +257,8 @@ static void decode_loop(void) {
                 break;
             }
         }
+
+        prev_loop_end = asp_plugin_get_tick_ms();
     }
     // Pause our mixer slot so other plugins regain full volume immediately
     // when we stop producing samples (song end, pause, plugin stop).
@@ -222,12 +270,12 @@ static void decode_loop(void) {
 static void start_new_file(const char* path) {
     // Close any existing file
     if (g_current_file) {
-        fclose(g_current_file);
+        asp_fastclose(g_current_file);
         g_current_file = NULL;
     }
 
     // Open new file
-    g_current_file = fopen(path, "rb");
+    g_current_file = asp_fastopen(path, "rb");
     if (!g_current_file) {
         asp_log_error("musicplayer", "Failed to open: %s", path);
         g_playing = false;
@@ -323,14 +371,13 @@ int audio_init(void) {
         // Raise the decoder's priority above the plugin task (5) so it
         // preempts UI/widget work right after an SD read returns. The
         // launcher's audio mixer (when enabled) runs at 7, so 6 is safe.
-        // pthread_attr_setschedparam isn't exported by the plugin loader,
-        // so we set priority on the live thread instead. The pthread.h on
-        // the SDK side doesn't declare pthread_setschedparam under default
-        // feature macros, but the symbol is exported by the launcher.
-        extern int pthread_setschedparam(pthread_t thread, int policy,
-                                         const struct sched_param* param);
-        struct sched_param sparam = { .sched_priority = 6 };
-        int prio_err = pthread_setschedparam(decoder_thread, SCHED_OTHER, &sparam);
+        // ESP-IDF doesn't implement pthread_attr_setschedparam, so we set
+        // priority on the live thread. The plugin SDK's pthread.h doesn't
+        // expose this prototype (header is gated by _POSIX_THREADS, which
+        // the plugin build doesn't define), but the symbol is exported by
+        // the launcher.
+        extern int pthread_setschedprio(pthread_t thread, int prio);
+        int prio_err = pthread_setschedprio(decoder_thread, 6);
         if (prio_err != 0) {
             asp_log_warn("musicplayer", "Failed to raise decoder priority: %d", prio_err);
         }
@@ -402,7 +449,7 @@ void audio_cleanup(void) {
 
     // Close file if open
     if (g_current_file) {
-        fclose(g_current_file);
+        asp_fastclose(g_current_file);
         g_current_file = NULL;
     }
 
