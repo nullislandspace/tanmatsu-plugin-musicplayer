@@ -9,29 +9,18 @@
 #include "tanmatsu_plugin.h"
 #include <stdio.h>
 
-// Modifier flags (from bsp/input.h)
-#define BSP_INPUT_MODIFIER_SUPER_L   (1 << 7)
-#define BSP_INPUT_MODIFIER_SUPER_R   (1 << 8)
-#define BSP_INPUT_MODIFIER_SUPER     (BSP_INPUT_MODIFIER_SUPER_L | BSP_INPUT_MODIFIER_SUPER_R)
-
-// Navigation keys (from bsp/input.h enum - counted from 0)
-// BSP_INPUT_NAVIGATION_KEY_NONE = 0
-// BSP_INPUT_NAVIGATION_KEY_ESC = 1
-// BSP_INPUT_NAVIGATION_KEY_LEFT = 2
-// BSP_INPUT_NAVIGATION_KEY_RIGHT = 3
-// BSP_INPUT_NAVIGATION_KEY_UP = 4
-// BSP_INPUT_NAVIGATION_KEY_DOWN = 5
-// ... etc
-#define NAV_KEY_LEFT        2
-#define NAV_KEY_RIGHT       3
-#define NAV_KEY_UP          4
-#define NAV_KEY_DOWN        5
-#define NAV_KEY_SELECT      12
-#define NAV_KEY_SPACE_L     16
-#define NAV_KEY_SPACE_M     17
-#define NAV_KEY_SPACE_R     18
-#define NAV_KEY_VOLUME_UP   37
-#define NAV_KEY_VOLUME_DOWN 38
+// Modifier flags and navigation key codes come from <asp/input_types.h>
+// (transitively included by tanmatsu_plugin.h).
+#define NAV_KEY_LEFT        ASP_INPUT_NAVIGATION_KEY_LEFT
+#define NAV_KEY_RIGHT       ASP_INPUT_NAVIGATION_KEY_RIGHT
+#define NAV_KEY_UP          ASP_INPUT_NAVIGATION_KEY_UP
+#define NAV_KEY_DOWN        ASP_INPUT_NAVIGATION_KEY_DOWN
+#define NAV_KEY_SELECT      ASP_INPUT_NAVIGATION_KEY_SELECT
+#define NAV_KEY_SPACE_L     ASP_INPUT_NAVIGATION_KEY_SPACE_L
+#define NAV_KEY_SPACE_M     ASP_INPUT_NAVIGATION_KEY_SPACE_M
+#define NAV_KEY_SPACE_R     ASP_INPUT_NAVIGATION_KEY_SPACE_R
+#define NAV_KEY_VOLUME_UP   ASP_INPUT_NAVIGATION_KEY_VOLUME_UP
+#define NAV_KEY_VOLUME_DOWN ASP_INPUT_NAVIGATION_KEY_VOLUME_DOWN
 
 static int g_hook_id = -1;
 
@@ -60,29 +49,31 @@ static void show_song_info(void) {
 }
 
 // Input hook callback
-static bool input_hook_callback(plugin_input_event_t* event, void* user_data) {
+static bool input_hook_callback(asp_input_event_t* event, void* user_data) {
     music_player_state_t* state = music_player_get_state();
     (void)user_data;
 
     // Handle navigation events - these have proper modifier flags
-    if (event->type == PLUGIN_INPUT_EVENT_TYPE_NAVIGATION) {
+    if (event->type == ASP_INPUT_EVENT_TYPE_NAVIGATION) {
         // Only process key press events
-        if (!event->state) {
+        if (!event->args_navigation.state) {
             return false;
         }
 
+        uint32_t key = event->args_navigation.key;
+
         // Check if SUPER (meta/logo) modifier is held
-        bool super_held = (event->modifiers & BSP_INPUT_MODIFIER_SUPER) != 0;
+        bool super_held = (event->args_navigation.modifiers & ASP_INPUT_MODIFIER_SUPER) != 0;
 
         // SUPER + Up: Show song info
-        if (super_held && event->key == NAV_KEY_UP) {
+        if (super_held && key == NAV_KEY_UP) {
             asp_log_info("musicplayer", "SUPER+UP: Show info");
             show_song_info();
             return true;  // Consume event
         }
 
         // SUPER + Left: Previous/restart
-        if (super_held && event->key == NAV_KEY_LEFT) {
+        if (super_held && key == NAV_KEY_LEFT) {
             asp_log_info("musicplayer", "SUPER+LEFT: Previous");
             int old_index = state->playlist.current_index;
             playlist_prev_or_restart();
@@ -103,7 +94,7 @@ static bool input_hook_callback(plugin_input_event_t* event, void* user_data) {
         }
 
         // SUPER + Right: Next song
-        if (super_held && event->key == NAV_KEY_RIGHT) {
+        if (super_held && key == NAV_KEY_RIGHT) {
             asp_log_info("musicplayer", "SUPER+RIGHT: Next");
             playlist_next();
             const char* path = playlist_get_current_path();
@@ -117,7 +108,7 @@ static bool input_hook_callback(plugin_input_event_t* event, void* user_data) {
         }
 
         // SUPER + Down: Toggle pause/play
-        if (super_held && event->key == NAV_KEY_DOWN) {
+        if (super_held && key == NAV_KEY_DOWN) {
             asp_log_info("musicplayer", "SUPER+DOWN: Pause/play");
             if (state->state == PLAYBACK_PLAYING) {
                 audio_pause();
@@ -132,7 +123,7 @@ static bool input_hook_callback(plugin_input_event_t* event, void* user_data) {
         }
 
         // SUPER + Select: Also toggle pause/play (alternative)
-        if (super_held && event->key == NAV_KEY_SELECT) {
+        if (super_held && key == NAV_KEY_SELECT) {
             asp_log_info("musicplayer", "SUPER+SELECT: Pause/play");
             if (state->state == PLAYBACK_PLAYING) {
                 audio_pause();
@@ -147,9 +138,9 @@ static bool input_hook_callback(plugin_input_event_t* event, void* user_data) {
         }
 
         // SUPER + Space: Pause/Play (any of the three space keys)
-        if (super_held && (event->key == NAV_KEY_SPACE_L ||
-                           event->key == NAV_KEY_SPACE_M ||
-                           event->key == NAV_KEY_SPACE_R)) {
+        if (super_held && (key == NAV_KEY_SPACE_L ||
+                           key == NAV_KEY_SPACE_M ||
+                           key == NAV_KEY_SPACE_R)) {
             asp_log_info("musicplayer", "SUPER+SPACE: Pause/play");
             if (state->state == PLAYBACK_PLAYING) {
                 audio_pause();
@@ -164,7 +155,7 @@ static bool input_hook_callback(plugin_input_event_t* event, void* user_data) {
         }
 
         // SUPER + Volume up: Increase volume
-        if (super_held && event->key == NAV_KEY_VOLUME_UP) {
+        if (super_held && key == NAV_KEY_VOLUME_UP) {
             if (state->volume <= 95) {
                 state->volume += 5;
             } else {
@@ -176,7 +167,7 @@ static bool input_hook_callback(plugin_input_event_t* event, void* user_data) {
         }
 
         // SUPER + Volume down: Decrease volume
-        if (super_held && event->key == NAV_KEY_VOLUME_DOWN) {
+        if (super_held && key == NAV_KEY_VOLUME_DOWN) {
             if (state->volume >= 5) {
                 state->volume -= 5;
             } else {
